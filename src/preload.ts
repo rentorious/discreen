@@ -15,8 +15,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveVideo: (arrayBuffer: ArrayBuffer, filename: string) => ipcRenderer.invoke('save-video', arrayBuffer, filename),
   
   // Listen for messages from main process
-  onStartRecording: (callback: (sourceId: string) => void) => {
-    ipcRenderer.on('start-recording', (_event, sourceId) => callback(sourceId));
+  onStartRecording: (callback: (data: { videoSourceId: string; audioSourceId: string | null } | string) => void) => {
+    ipcRenderer.on('start-recording', (_event, data) => callback(data));
   },
   onStopRecording: (callback: () => void) => {
     ipcRenderer.on('stop-recording', () => callback());

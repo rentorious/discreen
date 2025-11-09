@@ -153,17 +153,47 @@ ipcMain.handle(
       const mp4Path = path.join(savePath, mp4Filename);
 
       try {
+        // Probe the file to check if it has audio tracks
+        let hasAudio = false;
+        try {
+          const probeData = await new Promise<any>((resolve, reject) => {
+            ffmpeg.ffprobe(webmPath, (err, data) => {
+              if (err) reject(err);
+              else resolve(data);
+            });
+          });
+
+          // Check if any stream is an audio stream
+          hasAudio =
+            probeData.streams?.some(
+              (stream: any) => stream.codec_type === "audio"
+            ) || false;
+          console.log("File has audio:", hasAudio);
+        } catch (probeError) {
+          console.warn(
+            "Failed to probe file for audio, assuming no audio:",
+            probeError
+          );
+          hasAudio = false;
+        }
+
         await new Promise<void>((resolve, reject) => {
-          const ffmpegCommand = ffmpeg(webmPath).outputOptions([
+          const outputOptions = [
             "-c:v libx264",
             "-preset fast",
             "-crf 23",
             "-movflags +faststart",
-          ]);
+          ];
 
-          // Only add audio encoding if audio track exists
-          // For now, we're recording video-only, so skip audio
-          // .outputOptions(['-c:a aac', '-b:a 128k'])
+          // Add audio encoding if audio track exists
+          if (hasAudio) {
+            outputOptions.push("-c:a aac", "-b:a 128k");
+            console.log("Including audio encoding in conversion");
+          } else {
+            console.log("No audio track detected, video-only conversion");
+          }
+
+          const ffmpegCommand = ffmpeg(webmPath).outputOptions(outputOptions);
 
           ffmpegCommand
             .output(mp4Path)

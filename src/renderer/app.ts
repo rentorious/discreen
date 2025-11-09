@@ -12,7 +12,7 @@ declare global {
       getDelay: () => Promise<number>;
       setDelay: (delay: number) => Promise<{ success: boolean }>;
       saveVideo: (arrayBuffer: ArrayBuffer, filename: string) => Promise<{ success: boolean; path?: string; error?: string }>;
-      onStartRecording: (callback: (sourceId: string) => void) => void;
+      onStartRecording: (callback: (data: { videoSourceId: string; audioSourceId: string | null } | string) => void) => void;
       onStopRecording: (callback: () => void) => void;
     };
   }
@@ -66,8 +66,13 @@ class ScreenRecorderApp {
 
   private setupIPCListeners(): void {
     // Listen for start recording command from main process
-    window.electronAPI.onStartRecording((sourceId: string) => {
-      this.doStartRecording(sourceId);
+    window.electronAPI.onStartRecording((data: { videoSourceId: string; audioSourceId: string | null } | string) => {
+      // Handle both old format (string) and new format (object) for backward compatibility
+      if (typeof data === 'string') {
+        this.doStartRecording(data, null);
+      } else {
+        this.doStartRecording(data.videoSourceId, data.audioSourceId);
+      }
     });
 
     // Listen for stop recording command from main process
@@ -76,35 +81,62 @@ class ScreenRecorderApp {
     });
   }
 
-  private async doStartRecording(sourceId: string): Promise<void> {
+  private async doStartRecording(videoSourceId: string, audioSourceId: string | null): Promise<void> {
     try {
       if (this.isRecording) {
         return;
       }
 
-      // Get screen stream - start with video only for now (audio can be added later)
-      // System audio capture in Electron requires special setup and may not work reliably
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
+      // Build getUserMedia constraints
+      // On Windows, include audio if audioSourceId is provided
+      const constraints: MediaStreamConstraints = {
         video: {
           // @ts-ignore - Electron-specific constraint
           mandatory: {
             chromeMediaSource: 'desktop',
-            chromeMediaSourceId: sourceId,
+            chromeMediaSourceId: videoSourceId,
           },
         } as MediaTrackConstraints,
-      });
-      console.log('Got stream with video');
+        audio: audioSourceId ? {
+          // @ts-ignore - Electron-specific constraint
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: audioSourceId,
+          },
+        } : false,
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      const audioTracks = stream.getAudioTracks();
+      const videoTracks = stream.getVideoTracks();
+      console.log('Got stream with video', videoTracks.length > 0 ? '✓' : '✗', 'and audio', audioTracks.length > 0 ? '✓' : '✗');
 
       this.stream = stream;
       this.recordedChunks = [];
 
-      // Determine best codec
+      // Determine best codec - include audio codec if audio tracks are present
+      const hasAudio = audioTracks.length > 0;
       let mimeType = 'video/webm';
-      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
-        mimeType = 'video/webm;codecs=vp9';
-      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
-        mimeType = 'video/webm;codecs=vp8';
+      
+      if (hasAudio) {
+        // Try codecs with audio support
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
+          mimeType = 'video/webm;codecs=vp9,opus';
+        } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+          mimeType = 'video/webm;codecs=vp8,opus';
+        } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+          mimeType = 'video/webm;codecs=vp9';
+        } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+          mimeType = 'video/webm;codecs=vp8';
+        }
+      } else {
+        // Video only
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+          mimeType = 'video/webm;codecs=vp9';
+        } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+          mimeType = 'video/webm;codecs=vp8';
+        }
       }
 
       this.mediaRecorder = new MediaRecorder(stream, {
