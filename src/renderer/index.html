@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Discreen - Screen Recorder</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Discreen</h1>
+    
+    <div class="status" id="status">
+      <span class="status-indicator" id="statusIndicator"></span>
+      <span id="statusText">Ready</span>
+    </div>
+
+    <div class="controls">
+      <button id="recordButton" class="btn btn-primary">Start Recording</button>
+      <button id="stopButton" class="btn btn-secondary" disabled>Stop Recording</button>
+    </div>
+
+    <div class="settings">
+      <button id="settingsButton" class="btn btn-link">Settings</button>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Settings</h2>
+          <button class="close-btn" id="closeSettings">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="setting-item">
+            <label for="savePath">Save Location:</label>
+            <div class="path-selector">
+              <input type="text" id="savePath" readonly>
+              <button id="browseButton" class="btn btn-small">Browse</button>
+            </div>
+          </div>
+          <div class="setting-item">
+            <label for="delay">Delay (seconds):</label>
+            <input type="number" id="delay" min="0" step="0.1" value="0">
+            <small>Delay before starting/stopping recording</small>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="saveSettings" class="btn btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
+
