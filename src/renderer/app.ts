@@ -82,7 +82,8 @@ class ScreenRecorderApp {
         return;
       }
 
-      // Get screen stream
+      // Get screen stream - start with video only for now (audio can be added later)
+      // System audio capture in Electron requires special setup and may not work reliably
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
@@ -93,6 +94,7 @@ class ScreenRecorderApp {
           },
         } as MediaTrackConstraints,
       });
+      console.log('Got stream with video');
 
       this.stream = stream;
       this.recordedChunks = [];
@@ -110,17 +112,80 @@ class ScreenRecorderApp {
       });
 
       this.mediaRecorder.ondataavailable = (event: BlobEvent) => {
-        if (event.data && event.data.size > 0) {
+        console.log('ondataavailable fired, data size:', event.data?.size || 0);
+        // Accept all chunks, even empty ones initially (MediaRecorder may send empty chunks at start)
+        if (event.data) {
           this.recordedChunks.push(event.data);
+          console.log('Received chunk, size:', event.data.size, 'Total chunks:', this.recordedChunks.length);
         }
       };
 
       this.mediaRecorder.onerror = (event: Event) => {
         console.error('MediaRecorder error:', event);
         this.updateStatus('Error recording', false);
+        this.isRecording = false;
       };
 
+      this.mediaRecorder.onstart = () => {
+        console.log('MediaRecorder started, state:', this.mediaRecorder?.state);
+      };
+
+      console.log('Starting MediaRecorder with mimeType:', mimeType);
+      const tracks = stream.getTracks();
+      console.log('Stream tracks:', tracks.map(t => {
+        const settings = t.getSettings();
+        return { 
+          kind: t.kind, 
+          enabled: t.enabled, 
+          readyState: t.readyState,
+          muted: t.muted,
+          settings: settings,
+          constraints: t.getConstraints()
+        };
+      }));
+      
+      // Verify tracks are actually producing data
+      tracks.forEach(track => {
+        track.onended = () => {
+          console.error('Track ended unexpectedly:', track.kind, 'readyState:', track.readyState);
+          if (track.kind === 'video') {
+            this.updateStatus('Video track ended - recording failed', false);
+            this.isRecording = false;
+          }
+        };
+        track.onmute = () => console.warn('Track muted:', track.kind);
+        track.onunmute = () => console.log('Track unmuted:', track.kind);
+      });
+      
+      // Check if video track exists and is valid
+      const videoTrack = tracks.find(t => t.kind === 'video');
+      if (!videoTrack) {
+        throw new Error('No video track in stream');
+      }
+      if (videoTrack.readyState !== 'live') {
+        throw new Error(`Video track not live, state: ${videoTrack.readyState}`);
+      }
+      
       this.mediaRecorder.start(100); // Collect data every 100ms
+      
+      // Verify it actually started and wait for first data chunk
+      setTimeout(() => {
+        if (this.mediaRecorder) {
+          console.log('MediaRecorder state after start:', this.mediaRecorder.state);
+          if (this.mediaRecorder.state !== 'recording') {
+            console.error('MediaRecorder failed to start, state:', this.mediaRecorder.state);
+            this.updateStatus('Failed to start recording', false);
+            this.isRecording = false;
+          } else {
+            // Check if we've received any non-empty chunks
+            const hasData = this.recordedChunks.some(chunk => chunk.size > 0);
+            if (!hasData && this.recordedChunks.length > 0) {
+              console.warn('MediaRecorder started but no data chunks yet. This is normal initially.');
+            }
+          }
+        }
+      }, 1000);
+      
       this.isRecording = true;
       this.updateStatus('Recording...', true);
     } catch (error) {
@@ -132,31 +197,65 @@ class ScreenRecorderApp {
   private async doStopRecording(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.mediaRecorder || !this.isRecording) {
+        console.warn('Cannot stop: mediaRecorder or isRecording check failed');
         resolve();
         return;
       }
 
+      console.log('Stopping MediaRecorder, state:', this.mediaRecorder.state);
+      console.log('Current chunks count:', this.recordedChunks.length);
+
       this.mediaRecorder.onstop = async () => {
         try {
+          console.log('MediaRecorder stopped, final chunks count:', this.recordedChunks.length);
+          
+          // Wait a bit to ensure all chunks are collected
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          console.log('After wait, chunks count:', this.recordedChunks.length);
+          
           // Stop the stream
           if (this.stream) {
             this.stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
             this.stream = null;
           }
 
-          // Create blob from recorded chunks
-          const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
-          const arrayBuffer = await blob.arrayBuffer();
+      // Filter out empty chunks and check if we have any data
+      const nonEmptyChunks = this.recordedChunks.filter(chunk => chunk.size > 0);
+      console.log('Total chunks:', this.recordedChunks.length, 'Non-empty chunks:', nonEmptyChunks.length);
+      
+      if (nonEmptyChunks.length === 0) {
+        console.error('No non-empty chunks collected. MediaRecorder state was:', this.mediaRecorder?.state);
+        console.error('All chunks were empty - MediaRecorder may not have had time to encode, or video track not producing frames');
+        throw new Error('No video data recorded - try recording for at least 2-3 seconds');
+      }
 
-          // Generate filename with timestamp
+      console.log('Creating blob from', nonEmptyChunks.length, 'non-empty chunks');
+      
+      // Calculate total size of non-empty chunks
+      const totalSize = nonEmptyChunks.reduce((sum, chunk) => sum + chunk.size, 0);
+      console.log('Total chunks size:', totalSize, 'bytes');
+      
+      // Create blob from non-empty chunks only
+      const blob = new Blob(nonEmptyChunks, { type: 'video/webm' });
+      console.log('Blob created, size:', blob.size);
+      
+      if (blob.size === 0 || totalSize === 0) {
+        throw new Error('Recorded video is empty (no data in chunks)');
+      }
+          
+          const arrayBuffer = await blob.arrayBuffer();
+          console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
+
+          // Generate filename with timestamp (will be converted to MP4 in main process)
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
           const filename = `recording-${timestamp}.webm`;
 
-          // Save via main process (pass ArrayBuffer, convert to Buffer in main)
+          // Save via main process (pass ArrayBuffer, convert to MP4 in main)
           const result = await window.electronAPI.saveVideo(arrayBuffer, filename);
           
           if (result.success) {
-            this.updateStatus('Recording saved', false);
+            this.updateStatus('Recording saved as MP4', false);
           } else {
             this.updateStatus('Error saving recording', false);
           }
@@ -167,12 +266,29 @@ class ScreenRecorderApp {
           resolve();
         } catch (error) {
           console.error('Error saving recording:', error);
-          this.updateStatus('Error saving recording', false);
+          this.updateStatus(`Error: ${(error as Error).message}`, false);
+          this.isRecording = false;
+          this.mediaRecorder = null;
+          this.recordedChunks = [];
           resolve();
         }
       };
 
-      this.mediaRecorder.stop();
+      // Ensure we're actually recording
+      if (this.mediaRecorder.state === 'recording') {
+        // Request all remaining data before stopping
+        this.mediaRecorder.requestData();
+        // Small delay to ensure requestData is processed
+        setTimeout(() => {
+          if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+            this.mediaRecorder.stop();
+          }
+        }, 50);
+      } else {
+        console.warn('MediaRecorder not in recording state:', this.mediaRecorder.state);
+        // Still try to stop it
+        this.mediaRecorder.stop();
+      }
     });
   }
 
