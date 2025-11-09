@@ -23,6 +23,8 @@ class ScreenRecorderApp {
   private recordedChunks: Blob[] = [];
   private stream: MediaStream | null = null;
   private isRecording: boolean = false;
+  private countdownInterval: number | null = null;
+  private countdownRemaining: number = 0;
 
   constructor() {
     this.initializeUI();
@@ -33,13 +35,10 @@ class ScreenRecorderApp {
   private initializeUI(): void {
     const recordButton = document.getElementById('recordButton') as HTMLButtonElement;
     const stopButton = document.getElementById('stopButton') as HTMLButtonElement;
-    const settingsButton = document.getElementById('settingsButton') as HTMLButtonElement;
-    const settingsModal = document.getElementById('settingsModal') as HTMLDivElement;
-    const closeSettings = document.getElementById('closeSettings') as HTMLButtonElement;
-    const saveSettings = document.getElementById('saveSettings') as HTMLButtonElement;
     const browseButton = document.getElementById('browseButton') as HTMLButtonElement;
+    const delayInput = document.getElementById('delay') as HTMLInputElement;
 
-    if (!recordButton || !stopButton || !settingsButton || !settingsModal) {
+    if (!recordButton || !stopButton) {
       console.error('Failed to find required UI elements');
       return;
     }
@@ -52,23 +51,17 @@ class ScreenRecorderApp {
       console.log('Stop button clicked');
       this.stopRecording();
     });
-    settingsButton.addEventListener('click', () => {
-      console.log('Settings button clicked');
-      settingsModal.classList.add('show');
-      this.loadSettings();
-    });
-    closeSettings.addEventListener('click', () => {
-      settingsModal.classList.remove('show');
-    });
-    saveSettings.addEventListener('click', () => this.saveSettings());
-    browseButton.addEventListener('click', () => this.browseSavePath());
 
-    // Close modal when clicking outside
-    settingsModal.addEventListener('click', (e: MouseEvent) => {
-      if (e.target === settingsModal) {
-        settingsModal.classList.remove('show');
-      }
-    });
+    if (browseButton) {
+      browseButton.addEventListener('click', () => this.browseSavePath());
+    }
+
+    if (delayInput) {
+      delayInput.addEventListener('change', () => {
+        const delay = parseFloat(delayInput.value) || 0;
+        this.saveDelay(delay);
+      });
+    }
   }
 
   private setupIPCListeners(): void {
@@ -190,18 +183,62 @@ class ScreenRecorderApp {
         this.updateStatus('Error: electronAPI not available', false);
         return;
       }
+
+      // Get delay from input and save it first
+      const delayInput = document.getElementById('delay') as HTMLInputElement;
+      const delay = delayInput ? parseFloat(delayInput.value) || 0 : 0;
+      
+      // Save delay to ensure main process has the latest value
+      await this.saveDelay(delay);
+
+      if (delay > 0) {
+        // Start countdown
+        this.startCountdown(delay);
+      }
+
       console.log('Starting recording...');
       const result = await window.electronAPI.startRecording();
       if (result.success) {
         console.log('Recording start command sent');
         // Status will be updated when recording actually starts (via IPC)
       } else {
+        this.stopCountdown();
         console.error('Recording start failed:', result.error);
         this.updateStatus(`Error: ${result.error}`, false);
       }
     } catch (error) {
+      this.stopCountdown();
       console.error('Error in startRecording:', error);
       this.updateStatus(`Error: ${(error as Error).message}`, false);
+    }
+  }
+
+  private startCountdown(seconds: number): void {
+    this.countdownRemaining = Math.ceil(seconds);
+    this.updateCountdownDisplay();
+
+    this.countdownInterval = window.setInterval(() => {
+      this.countdownRemaining -= 1;
+      this.updateCountdownDisplay();
+
+      if (this.countdownRemaining <= 0) {
+        this.stopCountdown();
+      }
+    }, 1000);
+  }
+
+  private stopCountdown(): void {
+    if (this.countdownInterval !== null) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+    this.countdownRemaining = 0;
+  }
+
+  private updateCountdownDisplay(): void {
+    const statusText = document.getElementById('statusText') as HTMLSpanElement;
+    if (statusText && this.countdownRemaining > 0) {
+      statusText.textContent = `Starting in ${this.countdownRemaining}...`;
     }
   }
 
@@ -225,20 +262,29 @@ class ScreenRecorderApp {
   }
 
   private updateStatus(text: string, recording: boolean): void {
+    // Stop countdown when status changes
+    if (recording) {
+      this.stopCountdown();
+    }
+
     const statusText = document.getElementById('statusText') as HTMLSpanElement;
     const statusIndicator = document.getElementById('statusIndicator') as HTMLSpanElement;
     const recordButton = document.getElementById('recordButton') as HTMLButtonElement;
     const stopButton = document.getElementById('stopButton') as HTMLButtonElement;
 
-    statusText.textContent = text;
-    if (recording) {
-      statusIndicator.classList.add('recording');
-    } else {
-      statusIndicator.classList.remove('recording');
+    if (statusText) {
+      statusText.textContent = text;
+    }
+    if (statusIndicator) {
+      if (recording) {
+        statusIndicator.classList.add('recording');
+      } else {
+        statusIndicator.classList.remove('recording');
+      }
     }
 
-    recordButton.disabled = recording;
-    stopButton.disabled = !recording;
+    if (recordButton) recordButton.disabled = recording;
+    if (stopButton) stopButton.disabled = !recording;
   }
 
   private async loadSettings(): Promise<void> {
@@ -260,14 +306,17 @@ class ScreenRecorderApp {
     }
   }
 
-  private async saveSettings(): Promise<void> {
-    const delayInput = document.getElementById('delay') as HTMLInputElement;
-    const delay = parseFloat(delayInput.value) || 0;
-
-    await window.electronAPI.setDelay(delay);
-
-    const settingsModal = document.getElementById('settingsModal') as HTMLDivElement;
-    settingsModal.classList.remove('show');
+  private async saveDelay(delay: number): Promise<void> {
+    try {
+      if (!window.electronAPI) {
+        console.error('electronAPI is not available');
+        return;
+      }
+      await window.electronAPI.setDelay(delay);
+      console.log('Delay saved:', delay);
+    } catch (error) {
+      console.error('Error saving delay:', error);
+    }
   }
 
   private async browseSavePath(): Promise<void> {

@@ -10,9 +10,9 @@ const recorder = new ScreenRecorder();
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 450,
-    height: 500,
+    height: 600,
     minWidth: 400,
-    minHeight: 400,
+    minHeight: 500,
     webPreferences: {
       preload: path.join(__dirname, '../preload.js'),
       nodeIntegration: false,
@@ -72,13 +72,7 @@ ipcMain.handle('stop-recording', async () => {
       throw new Error('Main window not available');
     }
     
-    const delay = settings.getDelay();
-    
-    if (delay > 0) {
-      // Wait for delay before stopping
-      await new Promise(resolve => setTimeout(resolve, delay * 1000));
-    }
-    
+    // No delay for stop - stop immediately
     await recorder.stopRecording(mainWindow);
     return { success: true };
   } catch (error) {
